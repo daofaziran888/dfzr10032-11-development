@@ -7,6 +7,8 @@ from app.store import store
 
 MODULE = "dedup"
 REQUIRED_FIELDS = ["策略编号", "输入来源", "去重键"]
+CONFIG_FIELDS = ["去重键", "排序字段", "保留策略", "时间窗口", "重复阈值"]
+OPTIONAL_FIELDS = ["排序字段", "保留策略", "时间窗口", "重复阈值", "策略状态"]
 STATUS_ORDER = ["草稿", "已配置", "生效中", "已停用"]
 ACTION_RULES = {"提交配置": "已配置", "启用策略": "生效中", "停用策略": "已停用"}
 NEGATIVE_ACTIONS = ["停用策略"]
@@ -44,13 +46,16 @@ class DedupService:
         rows = store.rows(MODULE)
         entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
         entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
+        for field in OPTIONAL_FIELDS:
+            entry[field] = values.get(field) or ""
+        entry["版本号"] = 1
         entry["status"] = STATUS_ORDER[0]
         entry["pending"] = True
         entry["abnormal"] = False
         rows.append(entry)
         return entry, []
 
-    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
+    def run_action(self, entry_id: int, action: str, values: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, str]:
         entry = store.find(MODULE, entry_id)
         if entry is None:
             return None, f"去重策略 {entry_id} 不存在或已归档"
@@ -59,7 +64,18 @@ class DedupService:
         target = ACTION_RULES[action]
         if target not in STATUS_ORDER:
             return None, f"目标状态「{target}」不在允许的状态序列里"
+        version_note = ""
+        if action == "提交配置":
+            changed = False
+            for field in CONFIG_FIELDS:
+                new_val = (values or {}).get(field)
+                if new_val is not None and str(new_val).strip() and str(new_val) != str(entry.get(field, "")):
+                    entry[field] = new_val
+                    changed = True
+            # 提交配置即固化一版：之后归并批次按此版本快照窗口与排序规则
+            entry["版本号"] = int(entry.get("版本号") or 0) + 1
+            version_note = f"，配置已固化为版本 v{entry['版本号']}" if changed else f"，当前版本 v{entry['版本号']}"
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
-        return entry, f"去重策略已{action}"
+        return entry, f"去重策略已{action}{version_note}"

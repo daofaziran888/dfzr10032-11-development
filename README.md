@@ -73,3 +73,26 @@ npm run dev
   `backend/app/routers/<模块>.py`，业务规则在 `backend/app/services/<模块>.py`。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 采集去重归并与明细追溯
+
+去重配置表（去重键、排序字段、时间窗口）之外，平台提供可追溯取舍的归并能力，
+涉及三张数据集：输入事件 `dedup_event`、归并批次 `dedup_batch`、去重明细 `dedup_detail`。
+
+- `POST /api/dedup/merge/events`：批量登记输入事件；事件时间落入已确认批次范围的
+  标记为迟到事件，不拒收。
+- `POST /api/dedup/merge/run`：按策略的去重键和有效时间范围批量归并待归并事件，
+  整组的保留记录与被归并事件逐条写入去重明细数据集；归并使用的窗口与排序规则
+  取自批次创建时的策略版本快照，与该批次记录的版本一致。
+- `POST /api/dedup/merge/batches/{id}/confirm`：确认批次并冻结该版本；
+  同一有效版本内一条事件不能既是保留记录又被归并（归并与确认时均校验）。
+- 已确认版本冻结后，迟到事件只进入自动升代的新版本，每个已确认版本始终只指向
+  一条明确的保留记录；`GET /api/dedup/merge/explain/{事件编号}` 解释迟到事件归到哪一版。
+- `POST /api/dedup/merge/lineage`：数据血缘追踪根据去重明细数据集写出
+  被归并事件 → 保留记录 的关系（保留记录自关联），每条输入事件都关联到
+  实际生效的保留记录；重复同步自动跳过。
+- `GET /api/dedup/merge/stats?策略编号=`：按版本对账，给出已确认版本（报告引用口径）
+  与当前口径的保留记录差异。
+
+验证：`cd backend && python3 tests/test_dedup_merge.py`（端到端覆盖版本快照、
+互斥约束、迟到升代、血缘幂等与口径对账）。
